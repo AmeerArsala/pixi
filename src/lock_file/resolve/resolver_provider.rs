@@ -1,14 +1,18 @@
 use std::{
+    cell::RefCell,
     collections::{BTreeMap, HashMap},
     future::ready,
+    rc::Rc,
 };
 
+use distribution_filename::SourceDistExtension;
 use distribution_types::{
     Dist, File, FileLocation, HashComparison, IndexLocations, IndexUrl, PrioritizedDist,
-    RegistrySourceDist, SourceDist, SourceDistCompatibility,
+    RegistrySourceDist, SourceDist, SourceDistCompatibility, UrlString,
 };
 use futures::{Future, FutureExt};
 use pep508_rs::{PackageName, VerbatimUrl};
+use pixi_consts::consts;
 use rattler_conda_types::RepoDataRecord;
 use uv_distribution::{ArchiveMetadata, Metadata};
 use uv_resolver::{
@@ -17,15 +21,15 @@ use uv_resolver::{
 };
 use uv_types::BuildContext;
 
-use crate::{
-    consts::DEFAULT_PYPI_INDEX_URL,
-    lock_file::{records_by_name::HasNameVersion, PypiPackageIdentifier},
-};
+use crate::lock_file::{records_by_name::HasNameVersion, PypiPackageIdentifier};
 
 pub(super) struct CondaResolverProvider<'a, Context: BuildContext> {
     pub(super) fallback: DefaultResolverProvider<'a, Context>,
     pub(super) conda_python_identifiers:
         &'a HashMap<PackageName, (RepoDataRecord, PypiPackageIdentifier)>,
+
+    /// Saves the number of requests by the uv solver per package
+    pub(super) package_requests: Rc<RefCell<HashMap<PackageName, u32>>>,
 }
 
 impl<'a, Context: BuildContext> ResolverProvider for CondaResolverProvider<'a, Context> {
@@ -50,7 +54,7 @@ impl<'a, Context: BuildContext> ResolverProvider for CondaResolverProvider<'a, C
                 requires_python: None,
                 size: None,
                 upload_time_utc_ms: None,
-                url: FileLocation::AbsoluteUrl(repodata_record.url.to_string()),
+                url: FileLocation::AbsoluteUrl(UrlString::from(repodata_record.url.clone())),
                 yanked: None,
             };
 
@@ -58,13 +62,15 @@ impl<'a, Context: BuildContext> ResolverProvider for CondaResolverProvider<'a, C
                 name: identifier.name.as_normalized().clone(),
                 version: repodata_record
                     .version()
-                    .version()
                     .to_string()
                     .parse()
                     .expect("could not convert to pypi version"),
                 file: Box::new(file),
-                index: IndexUrl::Pypi(VerbatimUrl::from_url(DEFAULT_PYPI_INDEX_URL.clone())),
+                index: IndexUrl::Pypi(VerbatimUrl::from_url(
+                    consts::DEFAULT_PYPI_INDEX_URL.clone(),
+                )),
                 wheels: vec![],
+                ext: SourceDistExtension::TarGz,
             };
 
             let prioritized_dist = PrioritizedDist::from_source(
@@ -72,6 +78,13 @@ impl<'a, Context: BuildContext> ResolverProvider for CondaResolverProvider<'a, C
                 Vec::new(),
                 SourceDistCompatibility::Compatible(HashComparison::Matched),
             );
+
+            // Record that we got a request for this package so we can track the number of requests
+            self.package_requests
+                .borrow_mut()
+                .entry(package_name.clone())
+                .and_modify(|e| *e += 1)
+                .or_insert(1);
 
             return ready(Ok(VersionsResponse::Found(vec![VersionMap::from(
                 BTreeMap::from_iter([(identifier.version.clone(), prioritized_dist)]),

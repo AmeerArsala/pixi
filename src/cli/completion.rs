@@ -66,6 +66,7 @@ pub(crate) fn execute(args: Args) -> miette::Result<()> {
     let script = match args.shell {
         Shell::Bash => replace_bash_completion(&script),
         Shell::Zsh => replace_zsh_completion(&script),
+        Shell::Fish => replace_fish_completion(&script),
         Shell::Nushell => replace_nushell_completion(&script),
         _ => Cow::Owned(script),
     };
@@ -126,6 +127,17 @@ $2::task"#;
     re.replace(script, replacement)
 }
 
+fn replace_fish_completion(script: &str) -> Cow<str> {
+    // Adds tab completion to the pixi run command.
+    let addition = "complete -c pixi -n \"__fish_seen_subcommand_from run\" -f -a \"(string split ' ' (pixi task list --machine-readable  2> /dev/null))\"";
+    let new_script = format!("{}{}\n", script, addition);
+    let pattern = r#"-n "__fish_seen_subcommand_from run""#;
+    let replacement = r#"-n "__fish_seen_subcommand_from run; or __fish_seen_subcommand_from r""#;
+    let re = Regex::new(pattern).unwrap();
+    let result = re.replace_all(&new_script, replacement);
+    Cow::Owned(result.into_owned())
+}
+
 /// Replace the parts of the nushell completion script that need different functionality.
 fn replace_nushell_completion(script: &str) -> Cow<str> {
     // Adds tab completion to the pixi run command.
@@ -151,7 +163,7 @@ mod tests {
     use super::*;
 
     #[test]
-    pub fn test_zsh_completion() {
+    pub(crate) fn test_zsh_completion() {
         let script = r#"
 (add)
 _arguments "${_arguments_options[@]}" \
@@ -193,7 +205,7 @@ _arguments "${_arguments_options[@]}" \
     }
 
     #[test]
-    pub fn test_bash_completion() {
+    pub(crate) fn test_bash_completion() {
         // NOTE THIS IS FORMATTED BY HAND!
         let script = r#"
         pixi__project__help__help)
@@ -239,7 +251,7 @@ _arguments "${_arguments_options[@]}" \
     }
 
     #[test]
-    pub fn test_nushell_completion() {
+    pub(crate) fn test_nushell_completion() {
         // NOTE THIS IS FORMATTED BY HAND!
         let script = r#"
   # Runs task in project
@@ -264,7 +276,7 @@ _arguments "${_arguments_options[@]}" \
     }
 
     #[test]
-    pub fn test_bash_completion_working_regex() {
+    pub(crate) fn test_bash_completion_working_regex() {
         // Generate the original completion script.
         let script = get_completion_script(Shell::Bash);
         // Test if there was a replacement done on the clap generated completions
@@ -272,7 +284,7 @@ _arguments "${_arguments_options[@]}" \
     }
 
     #[test]
-    pub fn test_zsh_completion_working_regex() {
+    pub(crate) fn test_zsh_completion_working_regex() {
         // Generate the original completion script.
         let script = get_completion_script(Shell::Zsh);
         // Test if there was a replacement done on the clap generated completions
@@ -280,7 +292,16 @@ _arguments "${_arguments_options[@]}" \
     }
 
     #[test]
-    pub fn test_nushell_completion_working_regex() {
+    pub(crate) fn test_fish_completion_working_regex() {
+        // Generate the original completion script.
+        let script = get_completion_script(Shell::Fish);
+        let replaced_script = replace_fish_completion(&script);
+        // Test if there was a replacement done on the clap generated completions
+        assert_ne!(replaced_script, script);
+    }
+
+    #[test]
+    pub(crate) fn test_nushell_completion_working_regex() {
         // Generate the original completion script.
         let script = get_completion_script(Shell::Nushell);
         // Test if there was a replacement done on the clap generated completions

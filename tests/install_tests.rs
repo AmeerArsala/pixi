@@ -1,29 +1,27 @@
 mod common;
 
+use crate::common::{
+    builders::{string_from_iter, HasDependencyConfig, HasPrefixUpdateConfig},
+    package_database::{Package, PackageDatabase},
+};
+use common::{LockFileExt, PixiControl};
+use pixi::cli::cli_config::ProjectConfig;
+use pixi::cli::{run, run::Args, LockFileUsageArgs};
+use pixi::environment::LockFileUsage;
+use pixi::Project;
+use pixi_config::{Config, DetachedEnvironments};
+use pixi_consts::consts;
+use pixi_manifest::{FeatureName, FeaturesExt};
+use rattler_conda_types::Platform;
+use serial_test::serial;
 use std::{
     fs::{create_dir_all, File},
     io::Write,
     path::{Path, PathBuf},
     str::FromStr,
 };
-
-use common::{LockFileExt, PixiControl};
-use pixi::{
-    cli::{run, run::Args, LockFileUsageArgs},
-    config::{Config, DetachedEnvironments},
-    consts,
-    consts::{DEFAULT_ENVIRONMENT_NAME, PIXI_UV_INSTALLER},
-    FeatureName,
-};
-use rattler_conda_types::Platform;
-use serial_test::serial;
 use tempfile::TempDir;
-use uv_toolchain::PythonEnvironment;
-
-use crate::common::{
-    builders::{string_from_iter, HasDependencyConfig},
-    package_database::{Package, PackageDatabase},
-};
+use uv_python::PythonEnvironment;
 
 /// Should add a python version to the environment and lock file that matches
 /// the specified version and run it
@@ -38,7 +36,7 @@ async fn install_run_python() {
     // Check if lock has python version
     let lock = pixi.lock_file().await.unwrap();
     assert!(lock.contains_match_spec(
-        DEFAULT_ENVIRONMENT_NAME,
+        consts::DEFAULT_ENVIRONMENT_NAME,
         Platform::current(),
         "python==3.11.0"
     ));
@@ -107,8 +105,16 @@ async fn test_incremental_lock_file() {
 
     // Get the created lock-file
     let lock = pixi.lock_file().await.unwrap();
-    assert!(lock.contains_match_spec(DEFAULT_ENVIRONMENT_NAME, Platform::current(), "foo ==1"));
-    assert!(lock.contains_match_spec(DEFAULT_ENVIRONMENT_NAME, Platform::current(), "bar ==1"));
+    assert!(lock.contains_match_spec(
+        consts::DEFAULT_ENVIRONMENT_NAME,
+        Platform::current(),
+        "foo ==1"
+    ));
+    assert!(lock.contains_match_spec(
+        consts::DEFAULT_ENVIRONMENT_NAME,
+        Platform::current(),
+        "bar ==1"
+    ));
 
     // Add version 2 of both `foo` and `bar`.
     package_database.add_package(Package::build("bar", "2").finish());
@@ -128,11 +134,19 @@ async fn test_incremental_lock_file() {
 
     let lock = pixi.lock_file().await.unwrap();
     assert!(
-        lock.contains_match_spec(DEFAULT_ENVIRONMENT_NAME, Platform::current(), "foo ==2"),
+        lock.contains_match_spec(
+            consts::DEFAULT_ENVIRONMENT_NAME,
+            Platform::current(),
+            "foo ==2"
+        ),
         "expected `foo` to be on version 2 because we changed the requirement"
     );
     assert!(
-        lock.contains_match_spec(DEFAULT_ENVIRONMENT_NAME, Platform::current(), "bar ==1"),
+        lock.contains_match_spec(
+            consts::DEFAULT_ENVIRONMENT_NAME,
+            Platform::current(),
+            "bar ==1"
+        ),
         "expected `bar` to remain locked to version 1."
     );
 }
@@ -183,7 +197,7 @@ async fn install_locked_with_config() {
     // Check if it didn't accidentally update the lockfile
     let lock = pixi.lock_file().await.unwrap();
     assert!(lock.contains_match_spec(
-        DEFAULT_ENVIRONMENT_NAME,
+        consts::DEFAULT_ENVIRONMENT_NAME,
         Platform::current(),
         python_version
     ));
@@ -195,7 +209,7 @@ async fn install_locked_with_config() {
     // Check if lock has python version updated
     let lock = pixi.lock_file().await.unwrap();
     assert!(lock.contains_match_spec(
-        DEFAULT_ENVIRONMENT_NAME,
+        consts::DEFAULT_ENVIRONMENT_NAME,
         Platform::current(),
         "python==3.9.0"
     ));
@@ -217,7 +231,9 @@ async fn install_locked_with_config() {
     let result = pixi
         .run(Args {
             task: vec!["which_python".to_string()],
-            manifest_path: None,
+            project_config: ProjectConfig {
+                manifest_path: None,
+            },
             ..Default::default()
         })
         .await
@@ -252,7 +268,7 @@ async fn install_frozen() {
     // Check if it didn't accidentally update the lockfile
     let lock = pixi.lock_file().await.unwrap();
     assert!(lock.contains_match_spec(
-        DEFAULT_ENVIRONMENT_NAME,
+        consts::DEFAULT_ENVIRONMENT_NAME,
         Platform::current(),
         "python==3.9.1"
     ));
@@ -282,8 +298,8 @@ fn create_uv_environment(prefix: &Path, cache: &uv_cache::Cache) -> PythonEnviro
     };
 
     // Current interpreter and venv
-    let interpreter = uv_toolchain::Interpreter::query(python, cache).unwrap();
-    uv_toolchain::PythonEnvironment::from_interpreter(interpreter)
+    let interpreter = uv_python::Interpreter::query(python, cache).unwrap();
+    uv_python::PythonEnvironment::from_interpreter(interpreter)
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
@@ -302,7 +318,7 @@ async fn pypi_reinstall_python() {
         .await
         .unwrap();
     assert!(pixi.lock_file().await.unwrap().contains_match_spec(
-        DEFAULT_ENVIRONMENT_NAME,
+        consts::DEFAULT_ENVIRONMENT_NAME,
         Platform::current(),
         "python==3.11"
     ));
@@ -324,7 +340,7 @@ async fn pypi_reinstall_python() {
     // Reinstall python
     pixi.add("python==3.12").with_install(true).await.unwrap();
     assert!(pixi.lock_file().await.unwrap().contains_match_spec(
-        DEFAULT_ENVIRONMENT_NAME,
+        consts::DEFAULT_ENVIRONMENT_NAME,
         Platform::current(),
         "python==3.12"
     ));
@@ -408,8 +424,8 @@ async fn test_channels_changed() {
 
     // Get an up-to-date lockfile and verify that bar version 2 was selected from
     // channel `a`.
-    let lock_file = pixi.up_to_date_lock_file().await.unwrap();
-    assert!(lock_file.contains_match_spec(DEFAULT_ENVIRONMENT_NAME, platform, "bar ==2"));
+    let lock_file = pixi.update_lock_file().await.unwrap();
+    assert!(lock_file.contains_match_spec(consts::DEFAULT_ENVIRONMENT_NAME, platform, "bar ==2"));
 
     // Switch the channel around
     let platform = Platform::current();
@@ -429,8 +445,8 @@ async fn test_channels_changed() {
 
     // Get an up-to-date lockfile and verify that bar version 1 was now selected
     // from channel `b`.
-    let lock_file = pixi.up_to_date_lock_file().await.unwrap();
-    assert!(lock_file.contains_match_spec(DEFAULT_ENVIRONMENT_NAME, platform, "bar ==1"));
+    let lock_file = pixi.update_lock_file().await.unwrap();
+    assert!(lock_file.contains_match_spec(consts::DEFAULT_ENVIRONMENT_NAME, platform, "bar ==1"));
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
@@ -467,7 +483,7 @@ async fn minimal_lockfile_update_pypi() {
     // Check the locked click dependencies
     let lock = pixi.lock_file().await.unwrap();
     assert!(lock.contains_pep508_requirement(
-        DEFAULT_ENVIRONMENT_NAME,
+        consts::DEFAULT_ENVIRONMENT_NAME,
         Platform::current(),
         pep508_rs::Requirement::from_str("click==7.1.2").unwrap()
     ));
@@ -482,9 +498,9 @@ async fn minimal_lockfile_update_pypi() {
     // `click` should not be updated to a higher version.
     let lock = pixi.lock_file().await.unwrap();
     assert!(lock.contains_pep508_requirement(
-        DEFAULT_ENVIRONMENT_NAME,
+        consts::DEFAULT_ENVIRONMENT_NAME,
         Platform::current(),
-        pep508_rs::Requirement::from_str("click==7.1.2").unwrap()
+        pep508_rs::Requirement::from_str("click>7.1.2").unwrap()
     ));
 }
 
@@ -520,7 +536,7 @@ async fn test_installer_name() {
     assert!(dist_info.exists(), "{dist_info:?} does not exist");
     let installer = dist_info.join("INSTALLER");
     let installer = std::fs::read_to_string(installer).unwrap();
-    assert_eq!(installer, PIXI_UV_INSTALLER);
+    assert_eq!(installer, consts::PIXI_UV_INSTALLER);
 
     // Write a new installer name to the INSTALLER file
     // so that we fake that it is not installed by pixi
@@ -547,5 +563,124 @@ async fn test_installer_name() {
         .unwrap();
     let installer = dist_info.join("INSTALLER");
     let installer = std::fs::read_to_string(installer).unwrap();
-    assert_eq!(installer, PIXI_UV_INSTALLER);
+    assert_eq!(installer, consts::PIXI_UV_INSTALLER);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+#[serial]
+#[cfg_attr(not(feature = "slow_integration_tests"), ignore)]
+/// Test full prefix install for an old lock file to see if it still works.
+/// Makes sure the lockfile isn't touched and the environment is still installed.
+async fn test_old_lock_install() {
+    let lock_str = std::fs::read_to_string("tests/satisfiability/old_lock_file/pixi.lock").unwrap();
+    let project = Project::from_path(Path::new(
+        "tests/satisfiability/old_lock_file/pyproject.toml",
+    ))
+    .unwrap();
+    pixi::environment::update_prefix(&project.default_environment(), LockFileUsage::Update, false)
+        .await
+        .unwrap();
+    assert_eq!(
+        lock_str,
+        std::fs::read_to_string("tests/satisfiability/old_lock_file/pixi.lock").unwrap()
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+#[serial]
+#[cfg_attr(not(feature = "slow_integration_tests"), ignore)]
+async fn test_no_build_isolation() {
+    let current_platform = Platform::current();
+    let setup_py = r#"
+from setuptools import setup, find_packages
+# custom import
+import boltons
+setup(
+    name="my-pkg",
+    version="0.1.0",
+    author="Your Name",
+    author_email="your.email@example.com",
+    description="A brief description of your package",
+    url="https://github.com/yourusername/your-repo",
+    packages=find_packages(),  # Automatically find packages in your project
+    classifiers=[
+        "Programming Language :: Python :: 3",
+        "License :: OSI Approved :: MIT License",
+        "Operating System :: OS Independent",
+    ],
+    python_requires=">=3.6",
+    install_requires=[
+    ],
+    entry_points={
+        'console_scripts': [
+            'your_command=your_package.module:main_function',
+        ],
+    },
+)
+    "#;
+
+    let manifest = format!(
+        r#"
+    [project]
+    name = "no-build-isolation"
+    channels = ["conda-forge"]
+    platforms = ["{platform}"]
+
+    [pypi-options]
+    no-build-isolation = ["my-pkg"]
+
+    [dependencies]
+    python = "3.12.*"
+    setuptools = ">=72,<73"
+    boltons = ">=24,<25"
+
+    [pypi-dependencies.my-pkg]
+    path = "./my-pkg"
+    "#,
+        platform = current_platform,
+    );
+
+    let pixi = PixiControl::from_manifest(&manifest).expect("cannot instantiate pixi project");
+
+    let project_path = pixi.project_path();
+    // Write setup.py to a my-pkg folder
+    let my_pkg = project_path.join("my-pkg");
+    std::fs::create_dir_all(&my_pkg).unwrap();
+    std::fs::write(my_pkg.join("setup.py"), setup_py).unwrap();
+
+    let has_pkg = pixi
+        .project()
+        .unwrap()
+        .default_environment()
+        .pypi_options()
+        .no_build_isolation
+        .unwrap()
+        .contains(&"my-pkg".to_string());
+
+    assert!(has_pkg, "my-pkg is not in no-build-isolation list");
+    pixi.install().await.expect("cannot install project");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+#[serial]
+#[cfg_attr(not(feature = "slow_integration_tests"), ignore)]
+async fn test_many_linux_wheel_tag() {
+    let pixi = PixiControl::new().unwrap();
+    #[cfg(not(target_os = "linux"))]
+    pixi.init_with_platforms(vec![
+        Platform::current().to_string(),
+        "linux-64".to_string(),
+    ])
+    .await
+    .unwrap();
+    #[cfg(target_os = "linux")]
+    pixi.init().await.unwrap();
+
+    pixi.add("python==3.12.*").await.unwrap();
+    // We know that this package has many linux wheel tags for this version
+    pixi.add("gmsh==4.13.1")
+        .set_type(pixi::DependencyType::PypiDependency)
+        .with_install(true)
+        .await
+        .unwrap();
 }

@@ -1,3 +1,4 @@
+use indexmap::IndexMap;
 use std::{
     collections::{HashMap, HashSet},
     fmt::Debug,
@@ -7,32 +8,32 @@ use std::{
 };
 
 use itertools::Either;
+use pixi_consts::consts;
+use pixi_manifest::{
+    self as manifest, EnvironmentName, Feature, FeatureName, FeaturesExt, HasFeaturesIter,
+    HasManifestRef, Manifest, SystemRequirements, Task, TaskName,
+};
 use rattler_conda_types::{Arch, Platform};
 
 use super::{
     errors::{UnknownTask, UnsupportedPlatformError},
-    manifest::{self, EnvironmentName, Feature, FeatureName, SystemRequirements},
     SolveGroup,
 };
-use crate::{
-    consts,
-    project::has_features::HasFeatures,
-    task::{Task, TaskName},
-    Project,
-};
+use crate::{project::HasProjectRef, Project};
 
-/// Describes a single environment from a project manifest. This is used to describe environments
-/// that can be installed and activated.
+/// Describes a single environment from a project manifest. This is used to
+/// describe environments that can be installed and activated.
 ///
-/// This struct is a higher level representation of a [`manifest::Environment`]. The
-/// `manifest::Environment` describes the data stored in the manifest file, while this struct
-/// provides methods to easily interact with an environment without having to deal with the
-/// structure of the project model.
+/// This struct is a higher level representation of a [`manifest::Environment`].
+/// The `manifest::Environment` describes the data stored in the manifest file,
+/// while this struct provides methods to easily interact with an environment
+/// without having to deal with the structure of the project model.
 ///
-/// This type does not provide manipulation methods. To modify the data model you should directly
-/// interact with the manifest instead.
+/// This type does not provide manipulation methods. To modify the data model
+/// you should directly interact with the manifest instead.
 ///
-/// The lifetime `'p` refers to the lifetime of the project that this environment belongs to.
+/// The lifetime `'p` refers to the lifetime of the project that this
+/// environment belongs to.
 #[derive(Clone)]
 pub struct Environment<'p> {
     /// The project this environment belongs to.
@@ -62,7 +63,7 @@ impl<'p> Eq for Environment<'p> {}
 
 impl<'p> Environment<'p> {
     /// Return new instance of Environment
-    pub fn new(project: &'p Project, environment: &'p manifest::Environment) -> Self {
+    pub(crate) fn new(project: &'p Project, environment: &'p manifest::Environment) -> Self {
         Self {
             project,
             environment,
@@ -70,32 +71,24 @@ impl<'p> Environment<'p> {
     }
 
     /// Returns true if this environment is the default environment.
-    pub fn is_default(&self) -> bool {
+    pub(crate) fn is_default(&self) -> bool {
         self.environment.name == EnvironmentName::Default
     }
 
     /// Returns the name of this environment.
-    pub fn name(&self) -> &EnvironmentName {
+    pub(crate) fn name(&self) -> &EnvironmentName {
         &self.environment.name
     }
 
-    /// Returns the solve group to which this environment belongs, or `None` if no solve group was
-    /// specified.
-    pub fn solve_group(&self) -> Option<SolveGroup<'p>> {
+    /// Returns the solve group to which this environment belongs, or `None` if
+    /// no solve group was specified.
+    pub(crate) fn solve_group(&self) -> Option<SolveGroup<'p>> {
         self.environment
             .solve_group
             .map(|solve_group_idx| SolveGroup {
                 project: self.project,
-                solve_group: &self.project.manifest.parsed.solve_groups.solve_groups
-                    [solve_group_idx],
+                solve_group: &self.project.manifest.parsed.solve_groups[solve_group_idx],
             })
-    }
-
-    /// Returns the manifest definition of this environment. See the documentation of
-    /// [`Environment`] for an overview of the difference between [`manifest::Environment`] and
-    /// [`Environment`].
-    pub fn manifest(&self) -> &'p manifest::Environment {
-        self.environment
     }
 
     /// Returns the directory where this environment is stored.
@@ -116,7 +109,8 @@ impl<'p> Environment<'p> {
 
         static WARN_ONCE: Once = Once::new();
 
-        // If the current platform is osx-arm64 and the environment supports osx-64, return osx-64.
+        // If the current platform is osx-arm64 and the environment supports osx-64,
+        // return osx-64.
         if current.is_osx() && self.platforms().contains(&Platform::Osx64) {
             WARN_ONCE.call_once(|| {
                 let warn_folder = self.project.pixi_dir().join(consts::ONE_TIME_MESSAGES_DIR);
@@ -150,8 +144,9 @@ impl<'p> Environment<'p> {
     ///
     /// Tasks are defined on a per-target per-feature per-environment basis.
     ///
-    /// If a `platform` is specified but this environment doesn't support the specified platform,
-    /// an [`UnsupportedPlatformError`] error is returned.
+    /// If a `platform` is specified but this environment doesn't support the
+    /// specified platform, an [`UnsupportedPlatformError`] error is
+    /// returned.
     pub fn tasks(
         &self,
         platform: Option<Platform>,
@@ -168,7 +163,7 @@ impl<'p> Environment<'p> {
 
     /// Return all tasks available for the given environment
     /// This will not return task prefixed with _
-    pub fn get_filtered_tasks(&self) -> HashSet<TaskName> {
+    pub(crate) fn get_filtered_tasks(&self) -> HashSet<TaskName> {
         self.tasks(Some(self.best_platform()))
             .into_iter()
             .flat_map(|tasks| {
@@ -183,9 +178,9 @@ impl<'p> Environment<'p> {
             .map(ToOwned::to_owned)
             .collect()
     }
-    /// Returns the task with the given `name` and for the specified `platform` or an `UnknownTask`
-    /// which explains why the task was not available.
-    pub fn task(
+    /// Returns the task with the given `name` and for the specified `platform`
+    /// or an `UnknownTask` which explains why the task was not available.
+    pub(crate) fn task(
         &self,
         name: &TaskName,
         platform: Option<Platform>,
@@ -203,20 +198,23 @@ impl<'p> Environment<'p> {
 
     /// Returns the system requirements for this environment.
     ///
-    /// The system requirements of the environment are the union of the system requirements of all
-    /// the features that make up the environment. If multiple features specify a requirement for
-    /// the same system package, the highest is chosen.
+    /// The system requirements of the environment are the union of the system
+    /// requirements of all the features that make up the environment. If
+    /// multiple features specify a requirement for the same system package,
+    /// the highest is chosen.
     ///
-    /// If an environment defines a solve group the system requirements of all environments in the
-    /// solve group are also combined. This means that if two environments in the same solve group
-    /// specify conflicting system requirements that the highest system requirements are chosen.
+    /// If an environment defines a solve group the system requirements of all
+    /// environments in the solve group are also combined. This means that
+    /// if two environments in the same solve group specify conflicting
+    /// system requirements that the highest system requirements are chosen.
     ///
-    /// This is done to ensure that the requirements of all environments in the same solve group are
-    /// compatible with each other.
+    /// This is done to ensure that the requirements of all environments in the
+    /// same solve group are compatible with each other.
     ///
-    /// If you want to get the system requirements for this environment without taking the solve
-    /// group into account, use the [`Self::local_system_requirements`] method.
-    pub fn system_requirements(&self) -> SystemRequirements {
+    /// If you want to get the system requirements for this environment without
+    /// taking the solve group into account, use the
+    /// [`Self::local_system_requirements`] method.
+    pub(crate) fn system_requirements(&self) -> SystemRequirements {
         if let Some(solve_group) = self.solve_group() {
             solve_group.system_requirements()
         } else {
@@ -224,11 +222,12 @@ impl<'p> Environment<'p> {
         }
     }
 
-    /// Returns the activation scripts that should be run when activating this environment.
-    ///
-    /// The activation scripts of all features are combined in the order they are defined for the
+    /// Returns the activation scripts that should be run when activating this
     /// environment.
-    pub fn activation_scripts(&self, platform: Option<Platform>) -> Vec<String> {
+    ///
+    /// The activation scripts of all features are combined in the order they
+    /// are defined for the environment.
+    pub(crate) fn activation_scripts(&self, platform: Option<Platform>) -> Vec<String> {
         self.features()
             .filter_map(|f| f.activation_scripts(platform))
             .flatten()
@@ -236,13 +235,15 @@ impl<'p> Environment<'p> {
             .collect()
     }
 
-    /// Returns the environment variables that should be set when activating this environment.
+    /// Returns the environment variables that should be set when activating
+    /// this environment.
     ///
-    /// The environment variables of all features are combined in the order they are defined for the environment.
-    pub fn activation_env(&self, platform: Option<Platform>) -> HashMap<String, String> {
+    /// The environment variables of all features are combined in the order they
+    /// are defined for the environment.
+    pub(crate) fn activation_env(&self, platform: Option<Platform>) -> IndexMap<String, String> {
         self.features()
             .filter_map(|f| f.activation_env(platform))
-            .fold(HashMap::new(), |mut acc, env| {
+            .fold(IndexMap::new(), |mut acc, env| {
                 acc.extend(env.iter().map(|(k, v)| (k.clone(), v.clone())));
                 acc
             })
@@ -267,12 +268,24 @@ impl<'p> Environment<'p> {
     }
 }
 
-impl<'p> HasFeatures<'p> for Environment<'p> {
+impl<'p> HasProjectRef<'p> for Environment<'p> {
+    fn project(&self) -> &'p Project {
+        self.project
+    }
+}
+
+impl<'p> HasManifestRef<'p> for Environment<'p> {
+    fn manifest(&self) -> &'p Manifest {
+        &self.project().manifest
+    }
+}
+
+impl<'p> HasFeaturesIter<'p> for Environment<'p> {
     /// Returns references to the features that make up this environment.
     fn features(&self) -> impl DoubleEndedIterator<Item = &'p Feature> + 'p {
+        let manifest = self.manifest();
         let environment_features = self.environment.features.iter().map(|feature_name| {
-            self.project
-                .manifest
+            manifest
                 .parsed
                 .features
                 .get(&FeatureName::Named(feature_name.clone()))
@@ -282,13 +295,8 @@ impl<'p> HasFeatures<'p> for Environment<'p> {
         if self.environment.no_default_feature {
             Either::Right(environment_features)
         } else {
-            Either::Left(environment_features.chain([self.project.manifest.default_feature()]))
+            Either::Left(environment_features.chain([self.manifest().default_feature()]))
         }
-    }
-
-    /// Returns the project this environment belongs to.
-    fn project(&self) -> &'p Project {
-        self.project
     }
 }
 
@@ -304,10 +312,9 @@ mod tests {
 
     use insta::assert_snapshot;
     use itertools::Itertools;
-    use rattler_conda_types::Channel;
+    use pixi_manifest::CondaDependencies;
 
     use super::*;
-    use crate::project::CondaDependencies;
 
     #[test]
     fn test_default_channels() {
@@ -326,15 +333,9 @@ mod tests {
             .default_environment()
             .channels()
             .into_iter()
-            .map(Channel::canonical_name)
+            .map(|c| c.as_str())
             .collect_vec();
-        assert_eq!(
-            channels,
-            vec![
-                "https://conda.anaconda.org/foo/",
-                "https://conda.anaconda.org/bar/"
-            ]
-        );
+        assert_eq!(channels, vec!["foo", "bar"]);
     }
 
     #[test]
@@ -425,7 +426,7 @@ mod tests {
     fn format_dependencies(dependencies: CondaDependencies) -> String {
         dependencies
             .into_specs()
-            .map(|(name, spec)| format!("{} = {}", name.as_source(), spec))
+            .map(|(name, spec)| format!("{} = {}", name.as_source(), spec.to_toml_value()))
             .join("\n")
     }
 
@@ -536,7 +537,7 @@ mod tests {
         assert_eq!(
             foobar_channels
                 .into_iter()
-                .map(|c| c.name.clone().unwrap())
+                .map(|c| c.to_string())
                 .collect_vec(),
             vec!["c", "d", "e", "f", "a", "b"]
         );
@@ -545,17 +546,18 @@ mod tests {
         assert_eq!(
             foo_channels
                 .into_iter()
-                .map(|c| c.name.clone().unwrap())
+                .map(|c| c.to_string())
                 .collect_vec(),
             vec!["c", "d", "a", "b"]
         );
 
-        // The default feature is not included in the channels, so only the feature channels are included.
+        // The default feature is not included in the channels, so only the feature
+        // channels are included.
         let barfoo_channels = manifest.environment("barfoo").unwrap().channels();
         assert_eq!(
             barfoo_channels
                 .into_iter()
-                .map(|c| c.name.clone().unwrap())
+                .map(|c| c.to_string())
                 .collect_vec(),
             vec!["a", "f"]
         )
@@ -585,7 +587,7 @@ mod tests {
         assert_eq!(
             foobar_channels
                 .into_iter()
-                .map(|c| c.name.clone().unwrap())
+                .map(|c| c.to_string())
                 .collect_vec(),
             vec!["d", "a", "b"]
         );
@@ -596,7 +598,7 @@ mod tests {
         assert_eq!(
             foo_channels
                 .into_iter()
-                .map(|c| c.name.clone().unwrap())
+                .map(|c| c.to_string())
                 .collect_vec(),
             vec!["a", "c", "b", "d"]
         );
@@ -630,7 +632,7 @@ mod tests {
         assert_eq!(
             foobar_channels
                 .into_iter()
-                .map(|c| c.name.clone().unwrap())
+                .map(|c| c.to_string())
                 .collect_vec(),
             vec!["nvidia", "pytorch", "barry", "conda-forge", "bar"]
         );
@@ -638,7 +640,7 @@ mod tests {
         assert_eq!(
             foo_channels
                 .into_iter()
-                .map(|c| c.name.clone().unwrap())
+                .map(|c| c.to_string())
                 .collect_vec(),
             vec!["nvidia", "pytorch", "conda-forge"]
         );
@@ -647,7 +649,7 @@ mod tests {
         assert_eq!(
             bar_channels
                 .into_iter()
-                .map(|c| c.name.clone().unwrap())
+                .map(|c| c.to_string())
                 .collect_vec(),
             vec!["barry", "conda-forge", "bar"]
         );
